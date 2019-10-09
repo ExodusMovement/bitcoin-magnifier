@@ -15,6 +15,7 @@
 #include <core_io.h>
 #include <hash.h>
 #include <index/blockfilterindex.h>
+#include <net.h>
 #include <policy/feerate.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
@@ -689,6 +690,60 @@ static UniValue getmempoolentry(const JSONRPCRequest& request)
     UniValue info(UniValue::VOBJ);
     entryToJSON(::mempool, info, e);
     return info;
+}
+
+static UniValue relaymempoolentries(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1) {
+        throw std::runtime_error(
+            RPCHelpMan{"relaymempoolentries",
+                "\nRelays mempool transactions to peers\n",
+                {
+                    {"txids", RPCArg::Type::ARR, RPCArg::Optional::NO, "The transaction ids (must be in mempool)",
+                        {
+                            {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The transaction id"},
+                        },
+                    },
+                },
+                RPCResult{"true"},
+                RPCExamples{
+                    HelpExampleCli("relaymempoolentries", "[\"mytxid\"]")
+            + HelpExampleRpc("relaymempoolentries", "[\"mytxid\"]")
+                },
+            }.ToString());
+    }
+
+    RPCTypeCheck(request.params, {
+        UniValue::VARR
+        }, true
+    );
+
+    UniValue hashes = request.params[0].get_array();
+    LOCK(mempool.cs);
+
+    std::vector<CInv> invs;
+    for (unsigned int idx = 0; idx < hashes.size(); idx++) {
+        uint256 hash = ParseHashV(hashes[idx], "hash");
+        CTxMemPool::txiter it = mempool.mapTx.find(hash);
+        if (it == mempool.mapTx.end()) {
+            continue;
+        }
+        CInv inv(MSG_TX, hash);
+        invs.push_back(inv);
+    }
+
+    if (!invs.empty()) {
+        g_connman->ForEachNode([&invs](CNode* pnode) {
+            LOCK(pnode->cs_inventory);
+            pnode->filterInventoryKnown.reset();
+            for (CInv inv : invs) {
+                pnode->PushInventory(inv);
+            }
+        });
+    }
+
+    UniValue ret(true);
+    return ret;
 }
 
 static UniValue removemempoolentry(const JSONRPCRequest& request)
@@ -2295,6 +2350,7 @@ static const CRPCCommand commands[] =
     { "blockchain",         "getmempoolancestors",    &getmempoolancestors,    {"txid","verbose"} },
     { "blockchain",         "getmempooldescendants",  &getmempooldescendants,  {"txid","verbose"} },
     { "blockchain",         "getmempoolentry",        &getmempoolentry,        {"txid"} },
+    { "blockchain",         "relaymempoolentries",    &relaymempoolentries,    {"txids"} },
     { "blockchain",         "getmempoolinfo",         &getmempoolinfo,         {} },
     { "blockchain",         "getrawmempool",          &getrawmempool,          {"verbose"} },
     { "blockchain",         "removemempoolentry",     &removemempoolentry,     {"txid"} },
