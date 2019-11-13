@@ -15,6 +15,7 @@
 #include <core_io.h>
 #include <hash.h>
 #include <index/blockfilterindex.h>
+#include <net.h>
 #include <policy/feerate.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
@@ -689,6 +690,92 @@ static UniValue getmempoolentry(const JSONRPCRequest& request)
     UniValue info(UniValue::VOBJ);
     entryToJSON(::mempool, info, e);
     return info;
+}
+
+static UniValue relaymempoolentries(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1) {
+        throw std::runtime_error(
+            RPCHelpMan{"relaymempoolentries",
+                "\nRelays mempool transactions to peers\n",
+                {
+                    {"txids", RPCArg::Type::ARR, RPCArg::Optional::NO, "The transaction ids (must be in mempool)",
+                        {
+                            {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The transaction id"},
+                        },
+                    },
+                },
+                RPCResult{"true"},
+                RPCExamples{
+                    HelpExampleCli("relaymempoolentries", "[\"mytxid\"]")
+            + HelpExampleRpc("relaymempoolentries", "[\"mytxid\"]")
+                },
+            }.ToString());
+    }
+
+    RPCTypeCheck(request.params, {
+        UniValue::VARR
+        }, true
+    );
+
+    UniValue hashes = request.params[0].get_array();
+    std::vector<CInv> invs;
+    for (unsigned int idx = 0; idx < hashes.size(); idx++) {
+        LOCK(mempool.cs);
+
+        uint256 hash = ParseHashV(hashes[idx], "hash");
+        CTxMemPool::txiter it = mempool.mapTx.find(hash);
+        if (it == mempool.mapTx.end()) {
+            continue;
+        }
+        CInv inv(MSG_TX, hash);
+        invs.push_back(inv);
+    }
+
+    if (!invs.empty()) {
+        g_connman->ForEachNode([&invs](CNode* pnode) {
+            if (pnode->m_tx_relay == nullptr) return;
+            LOCK(pnode->m_tx_relay->cs_tx_inventory);
+            pnode->m_tx_relay->filterInventoryKnown.reset();
+            for (CInv inv : invs) {
+                pnode->PushInventory(inv);
+            }
+        });
+    }
+
+    UniValue ret(true);
+    return ret;
+}
+
+static UniValue removemempoolentry(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1) {
+        throw std::runtime_error(
+            RPCHelpMan{"removemempoolentry",
+               "\nRemove mempool data for given transaction\n",
+               {
+                       {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The transaction id (must be in mempool)"},
+               },
+               RPCResults{},
+               RPCExamples{
+                       HelpExampleCli("removemempoolentry", "\"mytxid\"")
+                       + HelpExampleRpc("removemempoolentry", "\"mytxid\"")
+               },
+            }.ToString());
+    }
+
+    uint256 hash = ParseHashV(request.params[0], "txid");
+
+    LOCK(mempool.cs);
+
+    CTxMemPool::txiter it = mempool.mapTx.find(hash);
+    if (it == mempool.mapTx.end()) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not in mempool");
+    }
+
+    mempool.removeRecursive(it->GetTx(), MemPoolRemovalReason::EXPIRY);
+
+    return NullUniValue;
 }
 
 static UniValue getblockhash(const JSONRPCRequest& request)
@@ -2269,8 +2356,10 @@ static const CRPCCommand commands[] =
     { "blockchain",         "getmempoolancestors",    &getmempoolancestors,    {"txid","verbose"} },
     { "blockchain",         "getmempooldescendants",  &getmempooldescendants,  {"txid","verbose"} },
     { "blockchain",         "getmempoolentry",        &getmempoolentry,        {"txid"} },
+    { "blockchain",         "relaymempoolentries",    &relaymempoolentries,    {"txids"} },
     { "blockchain",         "getmempoolinfo",         &getmempoolinfo,         {} },
     { "blockchain",         "getrawmempool",          &getrawmempool,          {"verbose"} },
+    { "blockchain",         "removemempoolentry",     &removemempoolentry,     {"txid"} },
     { "blockchain",         "gettxout",               &gettxout,               {"txid","n","include_mempool"} },
     { "blockchain",         "gettxoutsetinfo",        &gettxoutsetinfo,        {} },
     { "blockchain",         "pruneblockchain",        &pruneblockchain,        {"height"} },
