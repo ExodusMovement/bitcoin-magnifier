@@ -718,6 +718,7 @@ static UniValue relaymempoolentries(const JSONRPCRequest& request)
         }, true
     );
 
+    int count = 0;
     UniValue hashes = request.params[0].get_array();
     std::vector<CInv> invs;
     for (unsigned int idx = 0; idx < hashes.size(); idx++) {
@@ -728,8 +729,12 @@ static UniValue relaymempoolentries(const JSONRPCRequest& request)
         if (it == mempool.mapTx.end()) {
             continue;
         }
+        if (it->GetCountWithAncestors() > 25) {
+            continue;
+        }
         CInv inv(MSG_TX, hash);
         invs.push_back(inv);
+        count++;
     }
 
     if (!invs.empty()) {
@@ -743,8 +748,9 @@ static UniValue relaymempoolentries(const JSONRPCRequest& request)
         });
     }
 
-    UniValue ret(true);
-    return ret;
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("relayed", count);
+    return obj;
 }
 
 static UniValue removemempoolentry(const JSONRPCRequest& request)
